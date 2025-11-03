@@ -3,6 +3,7 @@ package me.itzg.helpers.modrinth;
 import static me.itzg.helpers.McImageHelper.SPLIT_COMMA_NL;
 import static me.itzg.helpers.McImageHelper.SPLIT_SYNOPSIS_COMMA_NL;
 import static me.itzg.helpers.http.Fetch.fetch;
+import static me.itzg.helpers.singles.NormalizeOptions.normalizeOptionList;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
@@ -54,12 +55,16 @@ public class ModrinthCommand implements Callable<Integer> {
             + "%nExamples: fabric-api, fabric:fabric-api, fabric:fabric-api:0.76.1+1.19.2,"
             + " datapack:terralith, @/path/to/modrinth-mods.txt"
             + "%nValid release types: release, beta, alpha"
-            + "%nValid loaders: fabric, forge, paper, datapack, etc.",
+            + "%nValid loaders: fabric, forge, paper, datapack, etc."
+            + "%nEmbedded comments are allowed.",
         split = SPLIT_COMMA_NL,
         splitSynopsisLabel = SPLIT_SYNOPSIS_COMMA_NL,
         paramLabel = "[loader:]id|slug[:version]"
     )
-    List<String> projects;
+    public void setProjects(List<String> projects) {
+        this.projects = normalizeOptionList(projects);
+    }
+    private List<String> projects = Collections.emptyList();
 
     @Option(names = "--game-version", description = "Applicable Minecraft version", required = true)
     String gameVersion;
@@ -111,8 +116,6 @@ public class ModrinthCommand implements Callable<Integer> {
     public Integer call() throws Exception {
         Files.createDirectories(outputDirectory);
 
-        final ModrinthManifest prevManifest = loadManifest();
-
         final List<Path> outputFiles = processProjects(projects);
 
         final ModrinthManifest newManifest = ModrinthManifest.builder()
@@ -120,20 +123,23 @@ public class ModrinthCommand implements Callable<Integer> {
             .projects(projects)
             .build();
 
+        final ModrinthManifest prevManifest = loadManifest();
         Manifests.cleanup(outputDirectory, prevManifest, newManifest, log);
-
-        Manifests.save(outputDirectory, ModrinthManifest.ID, newManifest);
+        Manifests.apply(outputDirectory, ModrinthManifest.ID, newManifest);
 
         return ExitCode.OK;
     }
 
     private List<Path> processProjects(List<String> projects) {
+        if (projects == null || projects.isEmpty()) {
+            return Collections.emptyList();
+        }
+
         try (ModrinthApiClient modrinthApiClient = new ModrinthApiClient(baseUrl, "modrinth", sharedFetchArgs.options())) {
             //noinspection DataFlowIssue since it thinks block() may return null
             return
                 modrinthApiClient.bulkGetProjects(
                     expandProjectListings(projects).stream()
-                        .filter(s -> !s.trim().isEmpty())
                         .map(ProjectRef::parse)
                 )
                 .defaultIfEmpty(Collections.emptyList())

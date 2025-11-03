@@ -46,12 +46,15 @@ import me.itzg.helpers.curseforge.model.ManifestType;
 import me.itzg.helpers.curseforge.model.MinecraftModpackManifest;
 import me.itzg.helpers.curseforge.model.ModLoader;
 import me.itzg.helpers.errors.GenericException;
+import me.itzg.helpers.errors.InvalidApiKeyException;
 import me.itzg.helpers.errors.InvalidParameterException;
 import me.itzg.helpers.fabric.FabricLauncherInstaller;
 import me.itzg.helpers.files.Manifests;
+import me.itzg.helpers.files.ReactiveFileUtils;
 import me.itzg.helpers.files.ResultsFileWriter;
 import me.itzg.helpers.forge.ForgeInstaller;
 import me.itzg.helpers.forge.ForgeInstallerResolver;
+import me.itzg.helpers.forge.ForgeUrlArgs;
 import me.itzg.helpers.forge.NeoForgeInstallerResolver;
 import me.itzg.helpers.http.FailedRequestException;
 import me.itzg.helpers.http.Fetch;
@@ -78,8 +81,6 @@ public class CurseForgeInstaller {
     public static final String REPO_SUBDIR_MODPACKS = "modpacks";
     public static final String REPO_SUBDIR_MODS = "mods";
     public static final String REPO_SUBDIR_WORLDS = "worlds";
-    private static final Duration BAD_FILE_DELAY = Duration.ofSeconds(5);
-    public static final int BAD_FILE_ATTEMPTS = 3;
 
     private final Path outputDir;
     private final Path resultsFile;
@@ -128,6 +129,18 @@ public class CurseForgeInstaller {
 
     @Getter @Setter
     private CacheArgs cacheArgs;
+
+    @Getter @Setter
+    private ForgeUrlArgs forgeUrlArgs;
+
+    @Getter @Setter
+    int maxConcurrentDownloads;
+
+    @Getter @Setter
+    int fileDownloadRetries = 5;
+
+    @Getter @Setter
+    Duration fileDownloadRetryMinDelay = Duration.ofSeconds(5);
 
     /**
      */
@@ -232,6 +245,9 @@ public class CurseForgeInstaller {
 
         } catch (IOException e) {
             throw new GenericException("File system issue during installation", e);
+        } catch (InvalidApiKeyException e) {
+            ApiKeyHelper.logKeyIssues(log, apiKey);
+            throw e;
         }
     }
 
@@ -373,6 +389,8 @@ public class CurseForgeInstaller {
             }
         }
         else {
+            log.info("Downloading modpack zip for {}", modFile.getDisplayName());
+
             modpackZip = context.cfApi.downloadTemp(modFile, ".zip",
                     (status, uri, file) ->
                         log.debug("Modpack file retrieval: status={} uri={} file={}", status, uri, file)
@@ -542,6 +560,8 @@ public class CurseForgeInstaller {
         final ExcludeIncludeIds excludeIncludeIds = resolveExcludeIncludes(context);
         log.debug("Using {}", excludeIncludeIds);
 
+        log.debug("Max concurrent downloads is {}", maxConcurrentDownloads);
+
         // Go through all the files listed in modpack (given project ID + file ID)
         final List<PathWithInfo> modFiles = Flux.fromIterable(modpackManifest.getFiles())
             // ...does the modpack even say it's required?
@@ -573,7 +593,8 @@ public class CurseForgeInstaller {
                 processFileWithIds(context, outputSubdirResolver,
                     excludeIncludeIds.getForceIncludeIds(), fileRef.getProjectID(), fileRef.getFileID()
                 )
-                    .checkpoint()
+                    .checkpoint(),
+                maxConcurrentDownloads > 0 ? maxConcurrentDownloads : 10
             )
             .collectList()
             .block();
@@ -747,14 +768,19 @@ public class CurseForgeInstaller {
     private  Mono<DownloadOrResolveResult> buildRetryableDownload(InstallContext context,
         CurseForgeMod modInfo, CurseForgeFile cfFile, boolean isWorld, Path outputSubdir
     ) {
+        final Path outputFile = resolveOutputFile(outputSubdir, cfFile);
+
         // use defer so that the download mono is rebuilt on each retry
         return Mono.defer(() ->
                 downloadOrResolveFile(context, modInfo, isWorld, outputSubdir, cfFile)
                     .checkpoint()
+                    .onErrorResume(throwable ->
+                        ReactiveFileUtils.removeFailedDownload(throwable, outputFile)
+                    )
             )
             // retry the deferred part above if one of the expected failure cases
             .retryWhen(
-                Retry.backoff(BAD_FILE_ATTEMPTS, BAD_FILE_DELAY)
+                Retry.backoff(fileDownloadRetries, fileDownloadRetryMinDelay)
                     .filter(throwable ->
                         throwable instanceof FileHashInvalidException ||
                             throwable instanceof FailedRequestException ||
@@ -762,8 +788,11 @@ public class CurseForgeInstaller {
                             throwable instanceof ChannelException
                     )
                     .doBeforeRetry(retrySignal ->
-                        log.warn("Retrying to download {} @ {}:{}",
-                            cfFile.getFileName(), modInfo.getName(), cfFile.getDisplayName()
+                        log.warn("Retry #{} download of {} @ {}:{} due to {}: {}",
+                            retrySignal.totalRetries() + 1,
+                            cfFile.getFileName(), modInfo.getName(), cfFile.getDisplayName(),
+                            retrySignal.failure().getClass().getSimpleName(),
+                            retrySignal.failure().getMessage()
                         )
                     )
             );
@@ -783,7 +812,7 @@ public class CurseForgeInstaller {
     private Mono<DownloadOrResolveResult> downloadOrResolveFile(InstallContext context, CurseForgeMod modInfo,
         boolean isWorld, Path outputSubdir, CurseForgeFile cfFile
     ) {
-        final Path outputFile = outputSubdir.resolve(cfFile.getFileName());
+        final Path outputFile = resolveOutputFile(outputSubdir, cfFile);
 
         // Will try to locate an existing file by alternate names that browser might create,
         // but only for non-world files of the modpack
@@ -811,6 +840,10 @@ public class CurseForgeInstaller {
                     failedRequestException -> handleFileNeedingManualDownload(modInfo, isWorld, cfFile, outputFile)
                 );
         }
+    }
+
+    private static @NotNull Path resolveOutputFile(Path outputSubdir, CurseForgeFile cfFile) {
+        return outputSubdir.resolve(cfFile.getFileName());
     }
 
     /**
@@ -938,11 +971,12 @@ public class CurseForgeInstaller {
             throw new GenericException("Unknown modloader ID: " + id);
         }
 
+        final String provider = parts[0];
         final String loaderVersion = parts.length == 2 ? parts[1] : parts[2];
 
         try (SharedFetch sharedFetch = Fetch.sharedFetch("install-curseforge", sharedFetchOptions)) {
 
-            switch (parts[0]) {
+            switch (provider) {
                 case "forge":
                     prepareForge(sharedFetch, minecraftVersion, loaderVersion);
                     break;
@@ -956,8 +990,11 @@ public class CurseForgeInstaller {
                     break;
 
                 default:
-                    throw new InvalidParameterException(String.format("ModLoader %s is not yet supported", parts[0]));
+                    throw new InvalidParameterException(String.format("ModLoader %s is not yet supported", provider));
             }
+        } catch (InvalidParameterException e) {
+            throw new GenericException("Unable to prepare modpack's mod loader "
+                + provider + " " + loaderVersion + " for Minecraft " + minecraftVersion, e);
         }
     }
 
@@ -971,7 +1008,8 @@ public class CurseForgeInstaller {
     private void prepareForge(SharedFetch sharedFetch, String minecraftVersion, String loaderVersion) {
         new ForgeInstaller(
             new ForgeInstallerResolver(sharedFetch,
-                minecraftVersion, loaderVersion
+                minecraftVersion, loaderVersion,
+                forgeUrlArgs.getPromotionsUrl(), forgeUrlArgs.getMavenRepoUrl()
             )
         )
             .install(outputDir, resultsFile, forceReinstallModloader, "Forge");

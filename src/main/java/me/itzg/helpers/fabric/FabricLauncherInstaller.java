@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Properties;
+import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
@@ -42,6 +43,12 @@ public class FabricLauncherInstaller {
     @Getter @Setter
     private boolean forceReinstall;
 
+    /**
+     * For testing purposes.
+     */
+    @Getter @Setter(AccessLevel.PACKAGE)
+    private boolean skipValidation;
+
     public void installUsingVersions(
         Options sharedFetchOptions, @NonNull String minecraftVersion,
         @Nullable String loaderVersion,
@@ -59,12 +66,14 @@ public class FabricLauncherInstaller {
 
                             fabricMetaClient.resolveInstallerVersion(installerVersion)
                                 .doOnNext(v -> log.debug("Resolved installer version {} from {}", v, installerVersion))
-                                .flatMap(resolvedInstallerVersion -> downloadResolvedLauncher(
-                                    fabricMetaClient,
-                                    resolvedMinecraftVersion,
-                                    resolvedLoaderVersion,
-                                    resolvedInstallerVersion
-                                ))
+                                .flatMap(resolvedInstallerVersion ->
+                                    downloadResolvedLauncher(
+                                        fabricMetaClient,
+                                        resolvedMinecraftVersion,
+                                        resolvedLoaderVersion,
+                                        resolvedInstallerVersion
+                                    )
+                                )
                                 .checkpoint("downloadResolvedLauncher")
                         )
                 )
@@ -97,7 +106,8 @@ public class FabricLauncherInstaller {
         if (needsInstall) {
             return fabricMetaClient.downloadLauncher(
                     outputDir, minecraftVersion, loaderVersion, installerVersion,
-                    Fetch.loggingDownloadStatusHandler(log)
+                    Fetch.loggingDownloadStatusHandler(log),
+                    skipValidation
                 )
                 .publishOn(Schedulers.boundedElastic())
                 .flatMap(launcherPath ->

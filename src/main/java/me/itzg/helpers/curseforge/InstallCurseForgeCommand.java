@@ -1,12 +1,14 @@
 package me.itzg.helpers.curseforge;
 
 import static me.itzg.helpers.http.Fetch.fetch;
+import static me.itzg.helpers.singles.NormalizeOptions.normalizeOptionSet;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -17,6 +19,7 @@ import me.itzg.helpers.cache.CacheArgs;
 import me.itzg.helpers.curseforge.ModpacksPageUrlParser.Parsed;
 import me.itzg.helpers.files.ResultsFileWriter;
 import me.itzg.helpers.files.TabularOutput;
+import me.itzg.helpers.forge.ForgeUrlArgs;
 import me.itzg.helpers.http.PathOrUri;
 import me.itzg.helpers.http.PathOrUriConverter;
 import me.itzg.helpers.http.SharedFetchArgs;
@@ -101,19 +104,24 @@ public class InstallCurseForgeCommand implements Callable<Integer> {
         PathOrUri excludeIncludeFile;
 
         static class Listed {
-            @Option(names = "--exclude-mods", paramLabel = "PROJECT_ID|SLUG",
-                split = McImageHelper.SPLIT_COMMA_WS, splitSynopsisLabel = McImageHelper.SPLIT_SYNOPSIS_COMMA_WS,
+            @Option(names = {"--exclude-mods", "--excludes"}, paramLabel = "PROJECT_ID|SLUG",
+                split = McImageHelper.SPLIT_COMMA_NL, splitSynopsisLabel = McImageHelper.SPLIT_SYNOPSIS_COMMA_NL,
                 description = "For mods that need to be excluded from server deployments, such as those that don't label as client"
             )
-            Set<String> excludedMods;
+            public void setExcludedMods(Set<String> excludedMods) {
+                this.excludedMods = normalizeOptionSet(excludedMods);
+            }
+            private Set<String> excludedMods;
 
-            @Option(names = "--force-include-mods", paramLabel = "PROJECT_ID|SLUG",
-                split = McImageHelper.SPLIT_COMMA_WS, splitSynopsisLabel = McImageHelper.SPLIT_SYNOPSIS_COMMA_WS,
+            @Option(names = {"--force-include-mods", "--force-includes"}, paramLabel = "PROJECT_ID|SLUG",
+                split = McImageHelper.SPLIT_COMMA_NL, splitSynopsisLabel = McImageHelper.SPLIT_SYNOPSIS_COMMA_NL,
                 description = "Some mods incorrectly declare client-only support, but still need to be included in a server deploy."
                     + "%nThis can also be used to selectively override exclusions."
             )
+            public void setForceIncludeMods(Set<String> forceIncludeMods) {
+                this.forceIncludeMods = normalizeOptionSet(forceIncludeMods);
+            }
             Set<String> forceIncludeMods;
-
         }
     }
 
@@ -167,6 +175,24 @@ public class InstallCurseForgeCommand implements Callable<Integer> {
     @ArgGroup(exclusive = false)
     CacheArgs cacheArgs;
 
+    @ArgGroup(exclusive = false)
+    ForgeUrlArgs forgeUrlArgs = new ForgeUrlArgs();
+
+    @Option(names = {"--max-concurrent-downloads"}, defaultValue = "${env:CF_MAX_CONCURRENT_DOWNLOADS:-10}",
+        description = "Default is ${DEFAULT-VALUE}"
+    )
+    int maxConcurrentDownloads;
+
+    @Option(names = "--file-download-retries", paramLabel = "COUNT",
+        description = "Default is ${DEFAULT-VALUE}"
+    )
+    int fileDownloadRetries = 5;
+
+    @Option(names = "--file-download-retry-min-delay", paramLabel = "DURATION",
+        description = "Default is ${DEFAULT-VALUE}"
+    )
+    Duration fileDownloadRetryMinDelay = Duration.ofSeconds(5);
+
     @Override
     public Integer call() throws Exception {
         // https://www.curseforge.com/minecraft/modpacks/all-the-mods-8/files
@@ -203,7 +229,11 @@ public class InstallCurseForgeCommand implements Callable<Integer> {
             .setApiKey(apiKey)
             .setDownloadsRepo(downloadsRepo)
             .setDisableApiCaching(disableApiCaching)
-            .setCacheArgs(cacheArgs);
+            .setCacheArgs(cacheArgs)
+            .setForgeUrlArgs(forgeUrlArgs)
+            .setMaxConcurrentDownloads(maxConcurrentDownloads)
+            .setFileDownloadRetries(fileDownloadRetries)
+            .setFileDownloadRetryMinDelay(fileDownloadRetryMinDelay);
 
         if (apiBaseUrl != null) {
             installer.setApiBaseUrl(apiBaseUrl);

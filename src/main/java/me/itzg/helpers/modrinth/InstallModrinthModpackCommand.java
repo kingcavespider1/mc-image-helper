@@ -1,7 +1,10 @@
 package me.itzg.helpers.modrinth;
 
+import static me.itzg.helpers.singles.NormalizeOptions.normalizeOptionList;
+
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Callable;
 import lombok.AccessLevel;
@@ -12,6 +15,7 @@ import me.itzg.helpers.errors.GenericException;
 import me.itzg.helpers.errors.InvalidParameterException;
 import me.itzg.helpers.files.Manifests;
 import me.itzg.helpers.files.ResultsFileWriter;
+import me.itzg.helpers.forge.ForgeUrlArgs;
 import me.itzg.helpers.http.Fetch;
 import me.itzg.helpers.http.PathOrUri;
 import me.itzg.helpers.http.PathOrUriConverter;
@@ -21,6 +25,7 @@ import me.itzg.helpers.json.ObjectMappers;
 import me.itzg.helpers.modrinth.model.VersionType;
 import org.jetbrains.annotations.VisibleForTesting;
 import picocli.CommandLine;
+import picocli.CommandLine.ArgGroup;
 import picocli.CommandLine.ExitCode;
 import picocli.CommandLine.Option;
 import reactor.core.publisher.Mono;
@@ -88,14 +93,22 @@ public class InstallModrinthModpackCommand implements Callable<Integer> {
     @Option(names = "--exclude-files",
         split = McImageHelper.SPLIT_COMMA_NL, splitSynopsisLabel = McImageHelper.SPLIT_SYNOPSIS_COMMA_NL,
         description = "Files to exclude, such as improperly declared client mods. It will match any part of the file's name/path."
+            + "%nEmbedded comments are allowed."
     )
-    List<String> excludeFiles;
+    public void setExcludeFiles(List<String> excludeFiles) {
+        this.excludeFiles = normalizeOptionList(excludeFiles);
+    }
+    private List<String> excludeFiles = Collections.emptyList();
 
     @Option(names = "--force-include-files",
         split = McImageHelper.SPLIT_COMMA_NL, splitSynopsisLabel = McImageHelper.SPLIT_SYNOPSIS_COMMA_NL,
         description = "Files to force include that were marked as non-server mods. It will match any part of the file's name/path."
+            + "%nEmbedded comments are allowed."
     )
-    List<String> forceIncludeFiles;
+    public void setForceIncludeFiles(List<String> forceIncludeFiles) {
+        this.forceIncludeFiles = normalizeOptionList(forceIncludeFiles);
+    }
+    private List<String> forceIncludeFiles = Collections.emptyList();
 
     @Option(names = "--overrides-exclusions",
         split = "\n|,", splitSynopsisLabel = "NL or ,",
@@ -103,8 +116,12 @@ public class InstallModrinthModpackCommand implements Callable<Integer> {
             + "*  : matches any non-slash characters\n"
             + "** : matches any characters\n"
             + "?  : matches one character"
+            + "%nEmbedded comments are allowed."
     )
-    List<String> overridesExclusions;
+    public void setOverridesExclusions(List<String> overridesExclusions) {
+        this.overridesExclusions = normalizeOptionList(overridesExclusions);
+    }
+    private List<String> overridesExclusions = Collections.emptyList();
 
     @Option(names = "--default-exclude-includes", paramLabel = "FILE|URI",
         description = "A JSON file that contains global and per modpack exclude/include declarations. "
@@ -115,6 +132,15 @@ public class InstallModrinthModpackCommand implements Callable<Integer> {
 
     @CommandLine.ArgGroup(exclusive = false)
     SharedFetchArgs sharedFetchArgs = new SharedFetchArgs();
+
+    @ArgGroup(exclusive = false)
+    ForgeUrlArgs forgeUrlArgs = new ForgeUrlArgs();
+
+    @Option(names = {"--max-concurrent-downloads"}, defaultValue = "${env:MODRINTH_MAX_CONCURRENT_DOWNLOADS:-10}",
+        description = "Can also set env var MODRINTH_MAX_CONCURRENT_DOWNLOADS%n"
+            + "Default is ${DEFAULT-VALUE}"
+    )
+    int maxConcurrentDownloads = 1;
 
     @Override
     public Integer call() throws IOException {
@@ -148,7 +174,8 @@ public class InstallModrinthModpackCommand implements Callable<Integer> {
                                 sharedFetch
                             )
                         )
-                        .setOverridesExclusions(overridesExclusions)
+                        .setOverridesExclusions(normalizeOptionList(overridesExclusions))
+                        .setMaxConcurrentDownloads(maxConcurrentDownloads)
                         .processModpack(sharedFetch)
                         .flatMap(installation -> {
                             if (resultsFile != null) {
@@ -221,7 +248,8 @@ public class InstallModrinthModpackCommand implements Callable<Integer> {
             mrPackFile, this.outputDirectory, this.resultsFile,
             this.forceModloaderReinstall,
             fileInclusionCalculator
-        );
+        )
+            .setForgeUrlArgs(forgeUrlArgs);
 
     private Mono<Installation> processResultsFile(FetchedPack fetchedPack, Installation installation) {
         return Mono.fromCallable(() -> {

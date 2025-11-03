@@ -2,6 +2,7 @@ package me.itzg.helpers.sync;
 
 import static me.itzg.helpers.McImageHelper.SPLIT_COMMA_NL;
 import static me.itzg.helpers.McImageHelper.SPLIT_SYNOPSIS_COMMA_NL;
+import static me.itzg.helpers.singles.NormalizeOptions.normalizeOptionList;
 
 import java.io.IOException;
 import java.net.URI;
@@ -11,12 +12,14 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Callable;
 import lombok.extern.slf4j.Slf4j;
 import me.itzg.helpers.errors.GenericException;
 import me.itzg.helpers.errors.InvalidParameterException;
 import me.itzg.helpers.files.Manifests;
+import me.itzg.helpers.files.ReactiveFileUtils;
 import me.itzg.helpers.http.FailedRequestException;
 import me.itzg.helpers.http.Fetch;
 import me.itzg.helpers.http.SharedFetch;
@@ -24,6 +27,7 @@ import me.itzg.helpers.http.Uris;
 import org.jetbrains.annotations.Blocking;
 import org.reactivestreams.Publisher;
 import org.slf4j.event.Level;
+import org.slf4j.spi.LoggingEventBuilder;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.ExitCode;
 import picocli.CommandLine.Option;
@@ -36,6 +40,7 @@ import reactor.core.scheduler.Schedulers;
     + "Supports auto-detected sourcing from file list, directories, and URLs")
 @Slf4j
 public class MulitCopyCommand implements Callable<Integer> {
+    @SuppressWarnings("unused")
     @Option(names = {"--help", "-h"}, usageHelp = true)
     boolean showHelp;
 
@@ -70,67 +75,100 @@ public class MulitCopyCommand implements Callable<Integer> {
     @Option(names = "--ignore-missing-sources", description = "Don't log or fail exit code when any or all sources are missing")
     boolean ignoreMissingSources;
 
-    @Parameters(split = SPLIT_COMMA_NL, splitSynopsisLabel = SPLIT_SYNOPSIS_COMMA_NL, arity = "1..*",
+    @Parameters(split = SPLIT_COMMA_NL, splitSynopsisLabel = SPLIT_SYNOPSIS_COMMA_NL,
         paramLabel = "SRC",
-        description = "Any mix of source file, directory, or URLs."
-            + "%nCan be optionally comma or newline separated."
+        description = "Any mix of source file, directory, or URLs delimited by commas or newlines"
+            + "%nPer-file destinations can be assigned by destination<source"
+            + "%nEmbedded comments are allowed."
     )
-    List<String> sources;
+    public void setSources(List<String> sources) {
+        this.sources = normalizeOptionList(sources);
+    }
+    List<String> sources = Collections.emptyList();
+
+    private final static String destinationDelimiter = "<";
 
     @Override
     public Integer call() throws Exception {
-
-        Files.createDirectories(dest);
-
-        Flux.fromIterable(sources)
+        final List<Path> results = Flux.fromIterable(sources)
             .map(String::trim)
             .filter(s -> !s.isEmpty())
-            .flatMap(source -> processSource(source, fileIsListingOption))
+            .flatMap(source -> processSource(source, fileIsListingOption, dest))
             .collectList()
-            .flatMap(this::cleanupAndSaveManifest)
             .block();
+
+        cleanupAndSaveManifest(results);
 
         return ExitCode.OK;
     }
 
-    private Mono<?> cleanupAndSaveManifest(List<Path> paths) {
-        return Mono.justOrEmpty(manifestId)
-            .publishOn(Schedulers.boundedElastic())
-            .map(s -> {
-                final MultiCopyManifest prevManifest = Manifests.load(dest, manifestId, MultiCopyManifest.class);
+    private void cleanupAndSaveManifest(List<Path> paths) {
+        if (manifestId != null) {
+            final MultiCopyManifest prevManifest = Manifests.load(dest, manifestId, MultiCopyManifest.class);
 
-                final MultiCopyManifest newManifest = MultiCopyManifest.builder()
-                    .files(Manifests.relativizeAll(dest, paths))
-                    .build();
+            final MultiCopyManifest newManifest = MultiCopyManifest.builder()
+                .files(Manifests.relativizeAll(dest, paths))
+                .build();
 
-                try {
-                    Manifests.cleanup(dest, prevManifest, newManifest, log);
-                } catch (IOException e) {
-                    log.warn("Failed to cleanup from previous manifest");
-                }
-
-                return Manifests.save(dest, manifestId, newManifest);
-            });
-    }
-
-    private Publisher<Path> processSource(String source, boolean fileIsListing) {
-        if (Uris.isUri(source)) {
-            return fileIsListing ? processRemoteListingFile(source) : processRemoteSource(source);
-        } else {
-            final Path path = Paths.get(source);
-            if (!Files.exists(path)) {
-                throw new GenericException(String.format("Source file '%s' does not exist", source));
+            try {
+                Manifests.cleanup(dest, prevManifest, newManifest, log);
+            } catch (IOException e) {
+                log.warn("Failed to cleanup from previous manifest");
             }
 
-            if (Files.isDirectory(path)) {
-                return processDirectory(path);
-            } else {
-                return fileIsListing ? processListingFile(path) : processFile(path);
-            }
+            Manifests.apply(dest, manifestId, newManifest);
         }
     }
 
-    private Flux<Path> processListingFile(Path listingFile) {
+    private Publisher<Path> processSource(String source, boolean fileIsListing, Path parentDestination) {
+        final Path destination;
+        final String resolvedSource;
+
+        final int delimiterPos = source.indexOf(destinationDelimiter);
+        if (delimiterPos > 0) {
+            destination = parentDestination.resolve(Paths.get(source.substring(0, delimiterPos)));
+            resolvedSource = source.substring(delimiterPos + 1);
+        }
+        else {
+            destination = parentDestination;
+            resolvedSource = source;
+        }
+
+        if (fileIsListing) {
+            if (Uris.isUri(resolvedSource)) {
+                return processRemoteListingFile(resolvedSource, destination);
+            } else {
+                final Path path = Paths.get(resolvedSource);
+                if (Files.isDirectory(path)) {
+                    throw new GenericException(String.format("Specified listing file '%s' is a directory", resolvedSource));
+                }
+                if (!Files.exists(path)) {
+                    throw new GenericException(String.format("Source file '%s' does not exist", resolvedSource));
+                }
+                return processListingFile(path, destination);
+            }
+        }
+
+        return ReactiveFileUtils.createDirectories(destination)
+            .flatMapMany(ignored -> {
+                if (Uris.isUri(resolvedSource)) {
+                    return processRemoteSource(resolvedSource, destination);
+                } else {
+                    final Path path = Paths.get(resolvedSource);
+                    if (!Files.exists(path)) {
+                        return Mono.error(new InvalidParameterException(String.format("Source file '%s' does not exist", resolvedSource)));
+                    }
+
+                    if (Files.isDirectory(path)) {
+                        return processDirectory(path, destination);
+                    } else {
+                        return processFile(path, destination);
+                    }
+                }
+            });
+    }
+
+    private Flux<Path> processListingFile(Path listingFile, Path destination) {
         return Mono.just(listingFile)
             .publishOn(Schedulers.boundedElastic())
             .flatMapMany(path -> {
@@ -141,22 +179,23 @@ public class MulitCopyCommand implements Callable<Integer> {
                         .filter(this::isListingLine)
                         .flatMap(src -> processSource(src,
                             // avoid recursive file-listing processing
-                            false));
+                            false,
+                            destination));
                 } catch (IOException e) {
                     return Mono.error(new GenericException("Failed to read file listing from " + path));
                 }
             });
     }
 
-    private Mono<Path> processFile(Path source) {
+    private Mono<Path> processFile(Path source, Path destination) {
 
         return Mono.just(source)
             .publishOn(Schedulers.boundedElastic())
-            .map(path -> processFileImmediate(source, dest));
+            .map(path -> processFileImmediate(source, destination));
     }
 
     /**
-     * Non-mono version of {@link #processFile(Path)}
+     * Non-mono version of {@link #processFile(Path, Path)}
      *
      * @param scopedDest allows for sub-directory destinations
      */
@@ -172,27 +211,23 @@ public class MulitCopyCommand implements Callable<Integer> {
             try {
                 if (Files.size(source) != Files.size(destFile)) {
                     if (Files.getLastModifiedTime(source).compareTo(Files.getLastModifiedTime(destFile)) > 0) {
-                        log.debug("Copying over existing={} file since source={} file is newer",
+                        log.info("Copying over existing file {} since {} is newer",
                             destFile, source
                         );
 
                         Files.copy(source, destFile, StandardCopyOption.REPLACE_EXISTING);
                     } else {
-                        log.debug("Skipping existing={} since it is newer than source={}",
-                            destFile, source
-                        );
+                        forSkipped().log("Skipping existing={} since it is newer than source={}", destFile, source);
                     }
                 } else {
-                    log.debug("Skipping existing={} since it has same size as source={}",
-                        destFile, source
-                    );
+                    forSkipped().log("Skipping existing={} since it has same size as source={}", destFile, source);
                 }
             } catch (IOException e) {
                 throw new GenericException("Failed to evaluate/copy existing file", e);
             }
         } else {
             try {
-                log.debug("Copying new file from={} to={}", source, destFile);
+                log.info("Copying new file from {} to {}", source, destFile);
 
                 Files.copy(source, destFile);
             } catch (IOException e) {
@@ -203,7 +238,7 @@ public class MulitCopyCommand implements Callable<Integer> {
         return destFile;
     }
 
-    private Flux<Path> processDirectory(Path srcDir) {
+    private Flux<Path> processDirectory(Path srcDir, Path destination) {
         return Mono.just(srcDir)
             .publishOn(Schedulers.boundedElastic())
             .flatMapMany(path -> {
@@ -220,7 +255,7 @@ public class MulitCopyCommand implements Callable<Integer> {
                     try (DirectoryStream<Path> files = Files.newDirectoryStream(srcDir, fileGlob)) {
                         for (final Path file : files) {
                             //noinspection BlockingMethodInNonBlockingContext because IntelliJ is confused
-                            results.add(processFileImmediate(file, dest));
+                            results.add(processFileImmediate(file, destination));
                         }
                     }
                     return Flux.fromIterable(results);
@@ -230,10 +265,10 @@ public class MulitCopyCommand implements Callable<Integer> {
             });
     }
 
-    private Mono<Path> processRemoteSource(String source) {
+    private Mono<Path> processRemoteSource(String source, Path destination) {
         return Fetch.fetch(URI.create(source))
             .userAgentCommand("mcopy")
-            .toDirectory(dest)
+            .toDirectory(destination)
             .skipUpToDate(skipUpToDate)
             .skipExisting(skipExisting)
             .handleDownloaded((downloaded, uri, size) ->
@@ -242,17 +277,15 @@ public class MulitCopyCommand implements Callable<Integer> {
             .handleStatus((status, uri, file) -> {
                 switch (status) {
                     case DOWNLOADING:
-                        log.info("Downloading {} from {}", file, uri);
                         break;
                     case SKIP_FILE_UP_TO_DATE:
-                        log.atLevel(quietWhenSkipped ? Level.DEBUG : Level.INFO)
-                            .log("The file {} is already up to date", file);
+                        forSkipped().log("The file {} is already up to date", file);
                         break;
                     case SKIP_FILE_EXISTS:
-                        log.atLevel(quietWhenSkipped ? Level.DEBUG : Level.INFO)
-                            .log("The file {} already exists", file);
+                        forSkipped().log("The file {} already exists", file);
                         break;
                     case DOWNLOADED:
+                        log.info("Downloaded {} from {}", file, uri);
                         break;
                 }
             })
@@ -263,7 +296,11 @@ public class MulitCopyCommand implements Callable<Integer> {
             .checkpoint("Retrieving " + source, true);
     }
 
-    private Flux<Path> processRemoteListingFile(String source) {
+    private LoggingEventBuilder forSkipped() {
+        return log.atLevel(quietWhenSkipped ? Level.DEBUG : Level.INFO);
+    }
+
+    private Flux<Path> processRemoteListingFile(String source, Path destination) {
         @SuppressWarnings("resource") // closed on terminate
         SharedFetch sharedFetch = Fetch.sharedFetch("mcopy", SharedFetch.Options.builder().build());
         return Mono.just(source)
@@ -273,7 +310,7 @@ public class MulitCopyCommand implements Callable<Integer> {
                     .flatMapMany(content -> Flux.just(content.split("\\r?\\n")))
                     .filter(this::isListingLine)
             )
-            .flatMap(this::processRemoteSource)
+            .flatMap(url -> processSource(url, false, destination))
             .doOnTerminate(sharedFetch::close)
             .checkpoint("Processing remote listing at " + source, true);
     }

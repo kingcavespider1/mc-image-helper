@@ -2,13 +2,13 @@ plugins {
   id 'java'
   id 'application'
   id 'idea'
-  id "io.freefair.lombok" version '8.14'
+  id "io.freefair.lombok" version '9.0.0'
   // https://github.com/qoomon/gradle-git-versioning-plugin
   id 'me.qoomon.git-versioning' version '6.4.4'
   // https://github.com/itzg/github-releaser-gradle-plugin
   id 'io.github.itzg.github-releaser' version '0.2.1'
   // https://github.com/ben-manes/gradle-versions-plugin
-  id 'com.github.ben-manes.versions' version '0.52.0'
+  id 'com.github.ben-manes.versions' version '0.53.0'
 }
 
 group = 'io.github.itzg'
@@ -80,14 +80,13 @@ repositories {
 dependencies {
   def picocliVersion = '4.7.7'
 
-  implementation(platform('com.fasterxml.jackson:jackson-bom:2.19.1'))
+  implementation(platform('com.fasterxml.jackson:jackson-bom:2.19.2'))
   // 1.4.+ requires Java 11 and we are stuck on 8
   implementation(platform('ch.qos.logback:logback-parent:[1.3.5,1.4)'))
 
   implementation 'ch.qos.logback:logback-core'
   implementation 'ch.qos.logback:logback-classic'
   implementation "info.picocli:picocli:${picocliVersion}"
-  implementation 'org.fusesource.jansi:jansi:2.4.2'
   implementation 'com.fasterxml.jackson.core:jackson-databind'
   implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
   implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-xml'
@@ -96,20 +95,20 @@ dependencies {
   // https://github.com/mbknor/mbknor-jackson-jsonSchema
   implementation 'com.kjetland:mbknor-jackson-jsonschema_2.13:1.0.39'
   implementation 'com.jayway.jsonpath:json-path:2.9.0'
-  implementation 'org.apache.httpcomponents.client5:httpclient5:5.5'
-  implementation 'io.projectreactor.netty:reactor-netty-http:1.2.7'
-  implementation 'org.apache.maven:maven-artifact:3.9.10'
-  implementation 'commons-codec:commons-codec:1.18.0'
+  implementation 'org.apache.httpcomponents.client5:httpclient5:5.5.1'
+  implementation 'io.projectreactor.netty:reactor-netty-http:1.2.11'
+  implementation 'org.apache.maven:maven-artifact:3.9.11'
+  implementation 'commons-codec:commons-codec:1.19.0'
   // for RFC5987 parsing of content-disposition filename*
   // 3.5.x is last of Java8 compatible: https://cxf.apache.org/download.html
   implementation 'org.apache.cxf:cxf-core:[3.5.6,3.6.0)'
-  implementation 'org.jetbrains:annotations:26.0.2'
+  implementation 'org.jetbrains:annotations:26.0.2-1'
 
   // https://commons.apache.org/proper/commons-compress/zip.html
   // For IMPLODE compression used by some CurseForge modpacks
-  implementation 'org.apache.commons:commons-compress:1.27.1'
+  implementation 'org.apache.commons:commons-compress:1.28.0'
 
-  testImplementation 'org.assertj:assertj-core:3.27.3'
+  testImplementation 'org.assertj:assertj-core:3.27.6'
   // https://github.com/webcompere/model-assert
   // for json assertions
   testImplementation 'uk.org.webcompere:model-assert:1.1.0'

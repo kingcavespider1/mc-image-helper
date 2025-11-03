@@ -7,6 +7,7 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -19,7 +20,6 @@ import me.itzg.helpers.errors.GenericException;
 import me.itzg.helpers.errors.InvalidParameterException;
 import me.itzg.helpers.http.FailedRequestException;
 import me.itzg.helpers.http.Fetch;
-import me.itzg.helpers.http.FileDownloadedHandler;
 import me.itzg.helpers.http.SharedFetch;
 import me.itzg.helpers.http.SharedFetch.Options;
 import me.itzg.helpers.http.UriBuilder;
@@ -181,31 +181,56 @@ public class ModrinthApiClient implements AutoCloseable {
     public Mono<List<Version>> getVersionsForProject(String projectIdOrSlug,
                                                      @Nullable Loader loader, String gameVersion
     ) {
-        return sharedFetch.fetch(
-                uriBuilder.resolve("/v2/project/{id|slug}/version",
-                    queryParameters()
-                        .addStringArray("loaders", expandCompatibleLoaders(loader))
-                        .addStringArray("game_versions", gameVersion),
-                    projectIdOrSlug
+        return getJustVersionsForProject(projectIdOrSlug, gameVersion,
+            loader != null ? Collections.singletonList(loader.toString()) : null,
+            false
+        )
+            .switchIfEmpty(
+                getJustVersionsForProject(projectIdOrSlug, gameVersion,
+                    expandCompatibleLoaders(loader),
+                    true
                 )
             )
-            .toObjectList(Version.class)
-            .assemble()
-            .flatMap(versions ->
-                versions.isEmpty() ?
-                    getProject(projectIdOrSlug)
-                        .flatMap(project -> Mono.error(new NoFilesAvailableException(project, loader, gameVersion)))
-                    : Mono.just(versions)
-                );
+            .switchIfEmpty(
+                getProject(projectIdOrSlug)
+                    .flatMap(project -> Mono.error(new NoFilesAvailableException(project, loader, gameVersion)))
+            );
     }
 
+    /**
+     * @return the non-empty list of versions or an empty mono
+     */
+    private Mono<List<Version>> getJustVersionsForProject(
+        String projectIdOrSlug, String gameVersion,
+        Collection<String> loaderNames,
+        boolean skipEmptyLoaders
+    ) {
+        return
+            skipEmptyLoaders && (loaderNames == null || loaderNames.isEmpty()) ?
+                Mono.empty() :
+                sharedFetch.fetch(
+                        uriBuilder.resolve("/v2/project/{id|slug}/version",
+                            queryParameters()
+                                .addStringArray("loaders", loaderNames)
+                                .addStringArray("game_versions", gameVersion),
+                            projectIdOrSlug
+                        )
+                    )
+                    .toObjectList(Version.class)
+                    .assemble()
+                    .filter(versions -> !versions.isEmpty());
+    }
+
+    /**
+     * @param loader the target loader
+     * @return a list of the compatible loaders
+     */
     private List<String> expandCompatibleLoaders(@Nullable Loader loader) {
         if (loader == null) {
             return null;
         }
 
         final ArrayList<String> expanded = new ArrayList<>();
-        expanded.add(loader.toString());
         Loader compatibleWith = loader;
         while ((compatibleWith = compatibleWith.getCompatibleWith()) != null) {
             expanded.add(compatibleWith.toString());
@@ -240,10 +265,10 @@ public class ModrinthApiClient implements AutoCloseable {
         sharedFetch.close();
     }
 
-    public Mono<Path> downloadFileFromUrl(Path outputFile, URI uri, FileDownloadedHandler fileDownloadedHandler) {
+    public Mono<Path> downloadFileFromUrl(Path outputFile, URI uri) {
         return sharedFetch.fetch(uri)
             .toFile(outputFile)
-            .handleDownloaded(fileDownloadedHandler)
+            .handleStatus(Fetch.loggingDownloadStatusHandler(log))
             .skipExisting(true)
             .assemble();
     }

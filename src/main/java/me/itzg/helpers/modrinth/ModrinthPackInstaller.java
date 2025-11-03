@@ -13,6 +13,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.ZipFile;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import me.itzg.helpers.errors.GenericException;
 import me.itzg.helpers.errors.InvalidParameterException;
@@ -21,6 +23,7 @@ import me.itzg.helpers.files.AntPathMatcher;
 import me.itzg.helpers.files.IoStreams;
 import me.itzg.helpers.forge.ForgeInstaller;
 import me.itzg.helpers.forge.ForgeInstallerResolver;
+import me.itzg.helpers.forge.ForgeUrlArgs;
 import me.itzg.helpers.forge.NeoForgeInstallerResolver;
 import me.itzg.helpers.http.SharedFetch;
 import me.itzg.helpers.http.SharedFetch.Options;
@@ -44,6 +47,10 @@ public class ModrinthPackInstaller {
     private final boolean forceModloaderReinstall;
     private final FileInclusionCalculator fileInclusionCalculator;
     private final Options sharedFetchOpts;
+    @Setter @Getter
+    private ForgeUrlArgs forgeUrlArgs = new ForgeUrlArgs();
+    @Setter @Getter
+    private int maxConcurrentDownloads = 1;
 
     private AntPathMatcher overridesExclusions;
 
@@ -111,6 +118,8 @@ public class ModrinthPackInstaller {
                 ));
         }
 
+        log.info("Processing modpack files for {} {}", modpackIndex.getName(), modpackIndex.getVersionId());
+
         return processModFiles(modpackIndex)
             .collectList()
             .map(modFiles ->
@@ -161,11 +170,9 @@ public class ModrinthPackInstaller {
 
                 return this.apiClient.downloadFileFromUrl(
                     outFilePath,
-                    modpackFile.getDownloads().get(0),
-                    (uri, file, contentSizeBytes) ->
-                        log.info("Downloaded {}", modpackFilePath)
+                    modpackFile.getDownloads().get(0)
                 );
-            });
+            }, maxConcurrentDownloads);
     }
 
     @SuppressWarnings("SameParameterValue")
@@ -253,6 +260,7 @@ public class ModrinthPackInstaller {
     private void prepareFabric(SharedFetch sharedFetch, String minecraftVersion, String fabricVersion) {
         new FabricLauncherInstaller(this.outputDirectory)
             .setResultsFile(this.resultsFile)
+            .setForceReinstall(forceModloaderReinstall)
             .installUsingVersions(
                 sharedFetchOpts, minecraftVersion,
                 fabricVersion,
@@ -262,7 +270,9 @@ public class ModrinthPackInstaller {
 
     private void prepareForge(SharedFetch sharedFetch, String minecraftVersion, String version) {
         new ForgeInstaller(
-            new ForgeInstallerResolver(sharedFetch, minecraftVersion, version)
+            new ForgeInstallerResolver(sharedFetch, minecraftVersion, version,
+                forgeUrlArgs.getPromotionsUrl(), forgeUrlArgs.getMavenRepoUrl()
+                )
         )
             .install(
                 this.outputDirectory,

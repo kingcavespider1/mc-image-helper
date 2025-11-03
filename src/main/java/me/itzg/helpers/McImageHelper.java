@@ -29,6 +29,7 @@ import me.itzg.helpers.get.GetCommand;
 import me.itzg.helpers.github.GithubCommands;
 import me.itzg.helpers.modrinth.InstallModrinthModpackCommand;
 import me.itzg.helpers.modrinth.ModrinthCommand;
+import me.itzg.helpers.modrinth.VersionFromModrinthProjectsCommand;
 import me.itzg.helpers.mvn.MavenDownloadCommand;
 import me.itzg.helpers.paper.InstallPaperCommand;
 import me.itzg.helpers.patch.PatchCommand;
@@ -93,8 +94,9 @@ import picocli.CommandLine.Spec;
         SyncAndInterpolate.class,
         TestLoggingCommand.class,
         TomlPathCommand.class,
-        YamlPathCommand.class,
         VanillaTweaksCommand.class,
+        VersionFromModrinthProjectsCommand.class,
+        YamlPathCommand.class
     }
 )
 @Slf4j
@@ -105,12 +107,6 @@ public class McImageHelper {
     //language=RegExp
     public static final String SPLIT_COMMA_NL = "\\n|\\s*,\\s*";
     public static final String SPLIT_SYNOPSIS_COMMA_NL = ",|<nl>";
-    /**
-     * Also works for newline delimited values.
-     */
-    //language=RegExp
-    public static final String SPLIT_COMMA_WS = "\\s+|\\s*,\\s*";
-    public static final String SPLIT_SYNOPSIS_COMMA_WS = ",|<ws>";
     //language=RegExp
     public static final String VERSION_REGEX = "\\d+(\\.\\d+)+";
 
@@ -147,6 +143,8 @@ public class McImageHelper {
                 enabled ? level : Level.INFO);
             if (Level.TRACE.isGreaterOrEqual(level)) {
                 ((Logger) LoggerFactory.getLogger("org.apache.hc.client5.http")).setLevel(
+                    enabled ? level : Level.INFO);
+                ((Logger) LoggerFactory.getLogger("reactor.netty.http.client.HttpClient")).setLevel(
                     enabled ? level : Level.INFO);
             }
         }
@@ -239,4 +237,5 @@ public class McImageHelper {
             return ExitCode.OK;
         }
     }
+
 }

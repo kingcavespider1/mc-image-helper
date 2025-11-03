@@ -37,9 +37,8 @@ class FabricLauncherInstallerTest {
             .files(Collections.singletonList("fabric-server-mc.1.19.2-loader.0.14.11-launcher.0.11.1.jar"))
             .build();
 
-        final Path manifestPath = Manifests.save(tempDir, "fabric", manifest);
-        assertThat(manifestPath.toString())
-            .contains("fabric");
+        Manifests.save(tempDir, "fabric", manifest);
+        assertThat(tempDir.resolve(".fabric-manifest.json")).exists();
 
         final FabricManifest loaded = Manifests.load(tempDir, "fabric", FabricManifest.class);
 
@@ -56,6 +55,7 @@ class FabricLauncherInstallerTest {
         final FabricLauncherInstaller installer = new FabricLauncherInstaller(
             tempDir
         )
+            .setSkipValidation(true)
             .setResultsFile(resultsFile);
         installer.setFabricMetaBaseUrl(wmRuntimeInfo.getHttpBaseUrl());
 
@@ -106,6 +106,7 @@ class FabricLauncherInstallerTest {
 
         final Path expectedResultsPath = tempDir.resolve("results.env");
         final FabricLauncherInstaller installer = new FabricLauncherInstaller(tempDir)
+            .setSkipValidation(true)
             .setResultsFile(expectedResultsPath);
         final URI loaderUri = URI.create(wmRuntimeInfo.getHttpBaseUrl() + "/fabric-launcher.jar");
 
@@ -142,7 +143,8 @@ class FabricLauncherInstallerTest {
                 )
         );
 
-        final FabricLauncherInstaller installer = new FabricLauncherInstaller(tempDir);
+        final FabricLauncherInstaller installer = new FabricLauncherInstaller(tempDir)
+            .setSkipValidation(true);
         installer.installUsingUri(
             Options.builder().build(), URI.create(wmRuntimeInfo.getHttpBaseUrl() + "/server")
         );
@@ -157,6 +159,7 @@ class FabricLauncherInstallerTest {
     void testWithLocalLauncherFile() throws IOException {
         final Path expectedResultsPath = tempDir.resolve("results.env");
         final FabricLauncherInstaller installer = new FabricLauncherInstaller(tempDir)
+            .setSkipValidation(true)
             .setResultsFile(expectedResultsPath);
 
         final Path launcherFile = Paths.get("src/test/resources/__files/fabric-empty-launcher.jar");
@@ -179,7 +182,8 @@ class FabricLauncherInstallerTest {
 
         final FabricLauncherInstaller installer = new FabricLauncherInstaller(
             tempDir
-        );
+        )
+            .setSkipValidation(true);
         installer.setFabricMetaBaseUrl(wmRuntimeInfo.getHttpBaseUrl());
 
         installer.installUsingVersions(
@@ -213,7 +217,8 @@ class FabricLauncherInstallerTest {
 
         final FabricLauncherInstaller installer = new FabricLauncherInstaller(
             tempDir
-        );
+        )
+            .setSkipValidation(true);
         installer.setFabricMetaBaseUrl(wmRuntimeInfo.getHttpBaseUrl());
 
         installer.installUsingVersions(
@@ -255,6 +260,7 @@ class FabricLauncherInstallerTest {
     void forRecordingVersionDiscovery() {
         final Path resultsFile = tempDir.resolve("results.env");
         final FabricLauncherInstaller installer = new FabricLauncherInstaller(tempDir)
+            .setSkipValidation(true)
             .setResultsFile(resultsFile);
         installer.setFabricMetaBaseUrl("http://localhost:8080");
 

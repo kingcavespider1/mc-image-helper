@@ -2,9 +2,14 @@ package me.itzg.helpers.files;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import java.io.IOException;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.PathMatcher;
+import java.nio.file.Paths;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -59,11 +64,12 @@ public class Manifests {
      * @param oldManifest can be null
      * @param removeListener passed the path of a file being removed. Useful for debug logging as removed.
      */
-    public static void cleanup(Path baseDir, BaseManifest oldManifest, BaseManifest newManifest,
+    public static void cleanup(Path baseDir, @Nullable BaseManifest oldManifest, @Nullable BaseManifest newManifest,
         Consumer<String> removeListener
     ) throws IOException {
         if (oldManifest != null && oldManifest.getFiles() != null) {
-            cleanup(baseDir, oldManifest.getFiles(), newManifest.getFiles(), removeListener);
+            cleanup(baseDir, oldManifest.getFiles(), newManifest != null ? newManifest.getFiles() : Collections.emptyList(),
+                removeListener);
         }
     }
 
@@ -119,12 +125,28 @@ public class Manifests {
      * @param ignoreMissingFiles relative paths of files to ignore if they're missing
      */
     public static boolean allFilesPresent(Path basePath, BaseManifest manifest, @Nullable List<String> ignoreMissingFiles) {
+        if (ignoreMissingFiles == null || ignoreMissingFiles.isEmpty()) {
+            return manifest.getFiles().stream()
+                .allMatch(p -> Files.exists(basePath.resolve(p)));
+        }
+
+        if (ignoreMissingFiles.stream().anyMatch(s -> s.equals("*"))) {
+            return true;
+        }
+
+        FileSystem fs = FileSystems.getDefault();
+        List<PathMatcher> matchers = ignoreMissingFiles.stream()
+            .map(pattern -> fs.getPathMatcher("glob:" + pattern))
+            .collect(Collectors.toList());
+
         return manifest.getFiles().stream()
-            .allMatch(p ->
-                    (ignoreMissingFiles != null && ignoreMissingFiles.contains(p))
-                || Files.exists(basePath.resolve(p))
-            );
+            .allMatch(p -> {
+                Path file = Paths.get(p);
+                boolean ignored = matchers.stream().anyMatch(m -> m.matches(file));
+                return ignored || Files.exists(basePath.resolve(p));
+            });
     }
+
 
     /**
      *
@@ -158,12 +180,30 @@ public class Manifests {
         ));
     }
 
-    public static <M extends BaseManifest> Path save(Path outputDir, String id, M manifest) {
+    /**
+     * Given a resulting ("new") manifest, it will save it when the file listing is non-empty or remove
+     * an existing manifest file if the listing is empty.
+     * @param outputDir directory to place the manifest file
+     * @param id manifest identifier, such as "fabric"
+     * @param manifest the resulting/new manifest
+     */
+    public static <M extends BaseManifest> void apply(Path outputDir, String id, M manifest) {
+        if (manifest == null) {
+            remove(outputDir, id);
+        }
+        else if (manifest.getFiles() == null || manifest.getFiles().isEmpty()) {
+            remove(outputDir, id);
+        }
+        else {
+            save(outputDir, id, manifest);
+        }
+    }
+
+    public static <M extends BaseManifest> void save(Path outputDir, String id, M manifest) {
         final Path manifestPath = buildManifestPath(outputDir, id);
 
         try {
             ObjectMappers.defaultMapper().writeValue(manifestPath.toFile(), manifest);
-            return manifestPath;
         } catch (IOException e) {
             throw new ManifestException("Failed to save manifest", e);
         }
